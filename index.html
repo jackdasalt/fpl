@@ -1,0 +1,444 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="viewport" content="width=device-width, initial-scale=1.0">
+    <meta charset="UTF-8">
+    <title>MyFPL</title>
+    <link rel="stylesheet" href="styles.css">
+    <link rel="icon" href="https://s.cafebazaar.ir/images/icons/com.pl.premierleague-d080bce6-6da6-432b-b8a4-7512e89dc891_512x512.png?x-img=v1/resize,h_256,w_256,lossless_false/optimize">
+
+    <!-- Markdown rendering (for comments) -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/dompurify@3.0.11/dist/purify.min.js"></script>
+</head>
+<body onload="loadSubreddit('fantasypl')">
+    <div class="navbar-container">
+        <div class="navbar">
+            <a href="#" onclick="loadSubreddit('fantasypl')" class="logo-link">
+                <img src="https://logos-world.net/wp-content/uploads/2023/08/Premier-League-Logo.png" alt="Premier League Logo" class="logo">
+            </a>
+            <div class="nav-links">
+                <a href="#" onclick="loadSubreddit('coys')">Spurs</a>
+                <a href="#" onclick="loadSubreddit('reddevils')">ManUtd</a>
+                <a href="#" onclick="loadSubreddit('mcfc')">ManCity</a>
+                <a href="#" onclick="loadSubreddit('chelseafc')">Chelsea</a>
+                <a href="#" onclick="loadSubreddit('gunners')">Arsenal</a>
+                <a href="#" onclick="loadSubreddit('liverpoolfc')">Liverpool</a>
+                <a href="#" onclick="loadSubreddit('crystalpalace')">Palace</a>
+            </div>
+            <div class="search-bar">
+                <input type="text" id="search-input" placeholder=" " onkeypress="if(event.key === 'Enter') searchSubreddit()">
+                <button onclick="searchSubreddit()">
+                    <img src="https://img.icons8.com/ios-glyphs/30/ffffff/search.png" alt="Search Icon">
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <div id="main-content">
+        <div id="content"></div>
+
+        <div id="comments-section" class="hidden">
+            <div id="comments-header">
+                <h2>Comments</h2>
+                <button onclick="closeComments()">X</button>
+            </div>
+
+            <!-- Original post text (TEXT ONLY) -->
+            <div id="post-text-box" class="post-text-box hidden"></div>
+
+            <div id="comments-container" class="comments-container"></div>
+        </div>
+    </div>
+
+    <button id="load-more" style="display: none;" onclick="loadMorePosts()">Load More</button>
+
+    <script>
+        let after = null;
+        let currentSubreddit = '';
+        let isLoading = false;
+
+        const SUBREDDITS = ['fantasypl', 'coys', 'reddevils', 'mcfc', 'chelseafc', 'gunners', 'liverpoolfc', 'crystalpalace'];
+
+        const PLACEHOLDER_THUMB = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='70' height='70'><rect width='100%25' height='100%25' fill='%23eceff1'/><path d='M18 28h34v2H18zm0 8h26v2H18zm0 8h30v2H18z' fill='%23c0c7cf'/></svg>";
+
+        const galleryStore = Object.create(null);
+
+        marked.setOptions({ gfm: true, breaks: true, mangle: false, headerIds: false });
+
+        // ✅ Robust "is this a Reddit-family URL?"
+        function isRedditUrl(href) {
+            if (!href) return false;
+            const h = String(href).toLowerCase();
+            try {
+                const u = new URL(h);
+                const host = u.hostname.replace(/^www\./, '');
+                return (
+                    host === 'reddit.com' ||
+                    host.endsWith('.reddit.com') ||
+                    host === 'redd.it' ||
+                    host.endsWith('.redd.it') ||
+                    host === 'v.redd.it' ||
+                    host === 'i.redd.it' ||
+                    host === 'preview.redd.it'
+                );
+            } catch {
+                return (
+                    h.includes('reddit.com') ||
+                    h.includes('redd.it') ||
+                    h.includes('v.redd.it') ||
+                    h.includes('i.redd.it') ||
+                    h.includes('preview.redd.it')
+                );
+            }
+        }
+
+        function renderRedditContent(md) {
+            if (!md) return '';
+
+            let text = String(md)
+                .replace(/&amp;nbsp;|&nbsp;/g, '\n\n')
+                .replace(/!\[gif\]\(giphy\|([^\)]+)\)/gi, (m, id) => `![](https://media.giphy.com/media/${id}/giphy.gif)`);
+
+            let html = marked.parse(text);
+            html = DOMPurify.sanitize(html, { ADD_ATTR: ['target', 'rel'] });
+
+            const wrapper = document.createElement('div');
+            wrapper.innerHTML = html;
+
+            // Turn image links into inline images
+            wrapper.querySelectorAll('a[href]').forEach(a => {
+                const href = (a.getAttribute('href') || '').replace(/&amp;/g, '&');
+                const isImg = /\.(png|jpe?g|gif|webp)(\?.*)?$/i.test(href) || href.includes('preview.redd.it/');
+                if (!isImg) return;
+
+                const img = document.createElement('img');
+                img.src = href;
+                img.alt = '';
+                img.loading = 'lazy';
+                img.referrerPolicy = 'no-referrer';
+                a.replaceWith(img);
+            });
+
+            // ✅ Remove ALL Reddit-family hyperlinks: show raw text only
+            wrapper.querySelectorAll('a[href]').forEach(a => {
+                const href = (a.getAttribute('href') || '').replace(/&amp;/g, '&');
+                if (!isRedditUrl(href)) return;
+
+                const span = document.createElement('span');
+                span.textContent = href; // show raw URL text
+                a.replaceWith(span);
+            });
+
+            return wrapper.innerHTML;
+        }
+
+        function getGalleryImages(postData) {
+            const imgs = [];
+            if (!postData || !postData.is_gallery || !postData.gallery_data || !postData.media_metadata) return imgs;
+
+            postData.gallery_data.items.forEach(item => {
+                const meta = postData.media_metadata[item.media_id];
+                if (!meta) return;
+
+                const raw =
+                    (meta.s && meta.s.u) ||
+                    (meta.p && meta.p.length ? meta.p[meta.p.length - 1].u : null);
+
+                if (raw) imgs.push(raw.replace(/&amp;/g, '&'));
+            });
+
+            return imgs;
+        }
+
+        function renderGalleryUI(postId, images) {
+            if (!images || images.length === 0) return '';
+            galleryStore[postId] = images;
+
+            const first = images[0];
+            const second = images.length > 1 ? images[1] : images[0];
+
+            return `
+                <div class="gallery" data-post-id="${postId}">
+                    <div class="gallery-thumbs">
+                        ${images.map((u, i) => `
+                            <img class="gallery-thumb ${i === 0 ? 'active' : ''}"
+                                 data-post-id="${postId}"
+                                 data-idx="${i}"
+                                 src="${u}"
+                                 alt="Thumb"
+                                 loading="lazy"
+                                 referrerpolicy="no-referrer">
+                        `).join('')}
+                    </div>
+
+                    <div class="gallery-main">
+                        <img class="gallery-main-img" data-slot="0" src="${first}" alt="Gallery image" loading="lazy" referrerpolicy="no-referrer">
+                        <img class="gallery-main-img" data-slot="1" src="${second}" alt="Gallery image" loading="lazy" referrerpolicy="no-referrer">
+                    </div>
+                </div>
+            `;
+        }
+
+        function updateGallery(postId, idx) {
+            const images = galleryStore[postId];
+            if (!images || !images.length) return;
+
+            const n = images.length;
+            const i0 = ((idx % n) + n) % n;
+            const i1 = (i0 + 1) % n;
+
+            const galleryEl = document.querySelector(`.gallery[data-post-id="${postId}"]`);
+            if (!galleryEl) return;
+
+            const img0 = galleryEl.querySelector('.gallery-main-img[data-slot="0"]');
+            const img1 = galleryEl.querySelector('.gallery-main-img[data-slot="1"]');
+
+            if (img0) img0.src = images[i0];
+            if (img1) img1.src = images[i1];
+
+            galleryEl.querySelectorAll('.gallery-thumb').forEach(t => {
+                t.classList.toggle('active', Number(t.dataset.idx) === i0);
+            });
+        }
+
+        // Click thumbnail -> switch images (DON'T open comments)
+        document.addEventListener('click', (e) => {
+            const t = e.target;
+            if (!(t instanceof Element)) return;
+            if (!t.classList.contains('gallery-thumb')) return;
+
+            e.stopPropagation();
+
+            const postId = t.getAttribute('data-post-id');
+            const idx = Number(t.getAttribute('data-idx'));
+            if (!postId || Number.isNaN(idx)) return;
+
+            updateGallery(postId, idx);
+        });
+
+        function searchSubreddit() {
+            const query = document.getElementById('search-input').value;
+            if (query) loadSubreddit(query.toLowerCase());
+        }
+
+        async function loadSubreddit(subreddit, reset = true) {
+            if (isLoading) return;
+            isLoading = true;
+
+            currentSubreddit = subreddit;
+
+            if (reset) {
+                after = null;
+                document.getElementById('content').innerHTML = '';
+                document.getElementById('comments-section').classList.add('hidden');
+                document.getElementById('content').style.width = '100%';
+            }
+
+            try {
+                const response = await fetch(`https://www.reddit.com/r/${subreddit}/new.json?limit=10&after=${after || ''}`);
+                const data = await response.json();
+                after = data.data.after;
+
+                const posts = data.data.children;
+                const contentDiv = document.getElementById('content');
+
+                posts.forEach(post => {
+                    const postData = post.data;
+                    const postElement = document.createElement('div');
+                    postElement.className = 'post';
+
+                    const postId = postData.id;
+                    const title = postData.title;
+                    const url = postData.url;
+
+                    const thumbnail = (postData.thumbnail && postData.thumbnail.startsWith('http'))
+                        ? postData.thumbnail
+                        : PLACEHOLDER_THUMB;
+
+                    const timeSince = timeAgo(postData.created_utc);
+                    const comments = postData.num_comments;
+
+                    const isImage = postData.post_hint === 'image';
+                    const galleryImages = getGalleryImages(postData);
+
+                    // ✅ "External" means NOT Reddit-family
+                    const isExternalNonReddit = url && !isRedditUrl(url);
+
+                    postElement.innerHTML = `
+                        <div class="post-thumbnail">
+                            <img src="${thumbnail}" alt="Thumbnail">
+                        </div>
+                        <div class="post-details">
+                            ${isExternalNonReddit
+                                ? `<a href="${url}" target="_blank" class="post-title">${title}</a>`
+                                : `<span class="post-title no-link">${title}</span>`
+                            }
+                            <div class="post-meta">
+                                <span>${timeSince}</span> |
+                                <span class="comments-count">${comments} comments</span>
+                            </div>
+
+                            ${galleryImages.length
+                                ? renderGalleryUI(postId, galleryImages)
+                                : (isImage ? `<div class="expandable-image"><img src="${url}" alt="Post Image"></div>` : '')
+                            }
+                        </div>
+                    `;
+
+                    // ✅ Whole post opens comments (but NOT when clicking links or gallery thumbs)
+                    postElement.addEventListener('click', (e) => {
+                        if (e.target.closest('a')) return;            // keep external links clickable
+                        if (e.target.closest('.gallery-thumbs')) return; // thumbs just switch images
+                        loadComments(postId, subreddit);
+                    });
+
+                    contentDiv.appendChild(postElement);
+                });
+
+                document.getElementById('load-more').style.display = after ? 'block' : 'none';
+            } finally {
+                isLoading = false;
+            }
+        }
+
+        async function loadMorePosts() {
+            if (!currentSubreddit) return;
+            loadSubreddit(currentSubreddit, false);
+        }
+
+        async function loadComments(postId, subreddit) {
+            const response = await fetch(`https://www.reddit.com/r/${subreddit}/comments/${postId}.json?sort=best`);
+            const data = await response.json();
+
+            const postInfo = data[0]?.data?.children?.[0]?.data;
+            const postText = (postInfo?.selftext || '').trim();
+            const postTextBox = document.getElementById('post-text-box');
+
+            if (postText) {
+                postTextBox.textContent = postText;
+                postTextBox.classList.remove('hidden');
+            } else {
+                postTextBox.textContent = '';
+                postTextBox.classList.add('hidden');
+            }
+
+            const comments = data[1].data.children;
+            const commentsContainer = document.getElementById('comments-container');
+            commentsContainer.innerHTML = '';
+
+            comments.forEach(comment => {
+                if (comment.kind !== 't1') return;
+                commentsContainer.appendChild(createCommentElement(comment.data));
+            });
+
+            document.getElementById('comments-section').classList.remove('hidden');
+            document.getElementById('content').style.width = '70%';
+        }
+
+        function closeComments() {
+            document.getElementById('comments-section').classList.add('hidden');
+            document.getElementById('content').style.width = '100%';
+
+            const postTextBox = document.getElementById('post-text-box');
+            postTextBox.textContent = '';
+            postTextBox.classList.add('hidden');
+        }
+
+        function createCommentElement(commentData) {
+            const commentElement = document.createElement('div');
+            commentElement.className = 'comment';
+
+            const author = commentData.author;
+            const body = renderRedditContent(commentData.body);
+            const timeSince = timeAgo(commentData.created_utc);
+            const replies = commentData.replies ? commentData.replies.data.children : [];
+
+            commentElement.innerHTML = `
+                <div class="comment-header">
+                    <span class="comment-author">${author}</span>
+                    <span class="comment-time">${timeSince}</span>
+                </div>
+                <div class="comment-body">${body}</div>
+                ${replies.length > 0 ? `<div class="comment-replies-toggle">View ${replies.length} replies</div>` : ''}
+            `;
+
+            if (replies.length > 0) {
+                const repliesContainer = document.createElement('div');
+                repliesContainer.className = 'comment-replies hidden';
+
+                replies.forEach(reply => {
+                    if (reply.kind === 't1') {
+                        repliesContainer.appendChild(createCommentElement(reply.data));
+                    }
+                });
+
+                commentElement.appendChild(repliesContainer);
+
+                const toggle = commentElement.querySelector('.comment-replies-toggle');
+                toggle.addEventListener('click', () => {
+                    repliesContainer.classList.toggle('hidden');
+                    toggle.textContent = repliesContainer.classList.contains('hidden')
+                        ? `View ${replies.length} replies`
+                        : `Hide replies`;
+                });
+            }
+
+            return commentElement;
+        }
+
+        function timeAgo(utcSeconds) {
+            const seconds = Math.floor(Date.now() / 1000) - utcSeconds;
+            let interval = seconds / 31536000;
+            if (interval > 1) return Math.floor(interval) + " years ago";
+            interval = seconds / 2592000;
+            if (interval > 1) return Math.floor(interval) + " months ago";
+            interval = seconds / 86400;
+            if (interval > 1) return Math.floor(interval) + " days ago";
+            interval = seconds / 3600;
+            if (interval > 1) return Math.floor(interval) + " hours ago";
+            interval = seconds / 60;
+            if (interval > 1) return Math.floor(interval) + " minutes ago";
+            return Math.floor(seconds) + " seconds ago";
+        }
+
+        // ESC closes comments, left/right cycles subreddits
+        document.addEventListener('keydown', (e) => {
+            const active = document.activeElement;
+            const typing = active && (
+                active.tagName === 'INPUT' ||
+                active.tagName === 'TEXTAREA' ||
+                active.isContentEditable
+            );
+            if (typing) return;
+
+            if (e.key === 'Escape') {
+                const commentsSection = document.getElementById('comments-section');
+                if (!commentsSection.classList.contains('hidden')) closeComments();
+                return;
+            }
+
+            if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+                let idx = SUBREDDITS.indexOf(currentSubreddit);
+                if (idx === -1) idx = 0;
+                idx = (idx + (e.key === 'ArrowRight' ? 1 : -1) + SUBREDDITS.length) % SUBREDDITS.length;
+                loadSubreddit(SUBREDDITS[idx]);
+            }
+        });
+
+        // Hybrid infinite scroll: auto-load near bottom (keeps button too)
+        let scrollTimer = null;
+        document.getElementById('content').addEventListener('scroll', () => {
+            if (scrollTimer) return;
+            scrollTimer = setTimeout(() => {
+                scrollTimer = null;
+                const el = document.getElementById('content');
+                const nearBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 600;
+                if (nearBottom && after && !isLoading) {
+                    loadSubreddit(currentSubreddit, false);
+                }
+            }, 150);
+        });
+    </script>
+</body>
+</html>
